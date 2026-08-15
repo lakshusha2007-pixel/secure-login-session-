@@ -12,9 +12,10 @@
 require_once __DIR__ . '/env.php';
 
 // --- Database connection settings ---
-if (!defined('DB_HOST')) define('DB_HOST', getenv('DB_HOST') ?: 'localhost');   // Hostname of the MySQL server
-if (!defined('DB_USER')) define('DB_USER', getenv('DB_USER') ?: 'root');        // Database username
-if (!defined('DB_PASS')) define('DB_PASS', getenv('DB_PASS') ?: '');            // Database password
+if (!defined('DB_HOST')) define('DB_HOST', getenv('DB_HOST') ?: '127.0.0.1');  // Hostname of the MySQL server
+if (!defined('DB_PORT')) define('DB_PORT', (int)(getenv('DB_PORT') ?: 3306));  // MySQL port
+if (!defined('DB_USER')) define('DB_USER', getenv('DB_USER') ?: 'root');       // Database username
+if (!defined('DB_PASS')) define('DB_PASS', getenv('DB_PASS') !== false ? getenv('DB_PASS') : ''); // Database password
 if (!defined('DB_NAME')) define('DB_NAME', getenv('DB_NAME') ?: 'secure_login');// Database name
 // -----------------------------------------------------------------------------
 
@@ -23,15 +24,20 @@ mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 try {
     // 1. First attempt to connect directly to the target database
     try {
-        $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+        $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
     } catch (mysqli_sql_exception $e) {
-        // If error is unknown database, attempt auto-creation
-        $connNoDb = new mysqli(DB_HOST, DB_USER, DB_PASS);
-        $connNoDb->query("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
-        $connNoDb->close();
+        // If error is unknown database on local server, attempt auto-creation
+        try {
+            $connNoDb = new mysqli(DB_HOST, DB_USER, DB_PASS, null, DB_PORT);
+            $connNoDb->query("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+            $connNoDb->close();
 
-        // Retry connection to newly created database
-        $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+            // Retry connection to newly created database
+            $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
+        } catch (Throwable $innerEx) {
+            // Re-throw original database connection exception
+            throw $e;
+        }
     }
 
     $conn->set_charset('utf8mb4');
