@@ -12,11 +12,17 @@
 require_once __DIR__ . '/env.php';
 
 // --- Database connection settings ---
-if (!defined('DB_HOST')) define('DB_HOST', getenv('DB_HOST') ?: '127.0.0.1');  // Hostname of the MySQL server
-if (!defined('DB_PORT')) define('DB_PORT', (int)(getenv('DB_PORT') ?: 3306));  // MySQL port
-if (!defined('DB_USER')) define('DB_USER', getenv('DB_USER') ?: 'root');       // Database username
-if (!defined('DB_PASS')) define('DB_PASS', getenv('DB_PASS') !== false ? getenv('DB_PASS') : ''); // Database password
-if (!defined('DB_NAME')) define('DB_NAME', getenv('DB_NAME') ?: 'secure_login');// Database name
+$resolvedHost = getenv('DB_HOST') ?: ($_ENV['DB_HOST'] ?? ($_SERVER['DB_HOST'] ?? '127.0.0.1'));
+$resolvedPort = (int)(getenv('DB_PORT') ?: ($_ENV['DB_PORT'] ?? ($_SERVER['DB_PORT'] ?? 3306)));
+$resolvedUser = getenv('DB_USER') ?: ($_ENV['DB_USER'] ?? ($_SERVER['DB_USER'] ?? 'root'));
+$resolvedPass = getenv('DB_PASS') !== false ? getenv('DB_PASS') : ($_ENV['DB_PASS'] ?? ($_SERVER['DB_PASS'] ?? ''));
+$resolvedName = getenv('DB_NAME') ?: ($_ENV['DB_NAME'] ?? ($_SERVER['DB_NAME'] ?? 'secure_login'));
+
+if (!defined('DB_HOST')) define('DB_HOST', $resolvedHost);
+if (!defined('DB_PORT')) define('DB_PORT', $resolvedPort);
+if (!defined('DB_USER')) define('DB_USER', $resolvedUser);
+if (!defined('DB_PASS')) define('DB_PASS', $resolvedPass);
+if (!defined('DB_NAME')) define('DB_NAME', $resolvedName);
 // -----------------------------------------------------------------------------
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
