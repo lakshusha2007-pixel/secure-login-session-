@@ -56,7 +56,7 @@ $cspNonce    = function_exists('get_csp_nonce') ? get_csp_nonce() : '';
                 <a href="<?php echo $assetPrefix; ?>profile.php">Profile</a>
 
                 <?php if (is_admin()): ?>
-                    <a href="<?php echo $assetPrefix; ?>admin/index.php" style="color: var(--primary); font-weight: 700;">⚙️ Admin Panel</a>
+                    <a href="<?php echo $assetPrefix; ?>admin/index.php" style="color: var(--primary); font-weight: 700;">Admin Panel</a>
                     <a href="<?php echo $assetPrefix; ?>admin/logs.php">Audit Logs</a>
                 <?php endif; ?>
 
