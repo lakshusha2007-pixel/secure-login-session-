@@ -46,3 +46,17 @@ function load_env_file(string $envPath): void
 
 // Auto-load .env file from project root
 load_env_file(__DIR__ . '/../.env');
+
+// Fallback: Check config/db_config.php if .env is missing or hidden by FTP
+if (!getenv('DB_HOST') && file_exists(__DIR__ . '/db_config.php')) {
+    $extraConfig = require __DIR__ . '/db_config.php';
+    if (is_array($extraConfig)) {
+        foreach ($extraConfig as $k => $v) {
+            if (getenv($k) === false) {
+                putenv("$k=$v");
+                $_ENV[$k] = (string)$v;
+                $_SERVER[$k] = (string)$v;
+            }
+        }
+    }
+}
