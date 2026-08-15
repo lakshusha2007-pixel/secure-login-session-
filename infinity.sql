@@ -7,37 +7,49 @@
 
 SET FOREIGN_KEY_CHECKS = 0;
 
+-- Drop any previous outdated tables to prevent column mismatch errors
+DROP TABLE IF EXISTS `user_credentials`;
+DROP TABLE IF EXISTS `csp_reports`;
+DROP TABLE IF EXISTS `privacy_requests`;
+DROP TABLE IF EXISTS `risk_events`;
+DROP TABLE IF EXISTS `api_keys`;
+DROP TABLE IF EXISTS `user_sessions`;
+DROP TABLE IF EXISTS `rate_limits`;
+DROP TABLE IF EXISTS `security_logs`;
+DROP TABLE IF EXISTS `password_resets`;
+DROP TABLE IF EXISTS `users`;
+
 -- ------------------------------------------------------------------------------
 -- 1. USERS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `users` (
-    `id`                       INT UNSIGNED NOT NULL AUTO_INCREMENT,
-    `fullname`                 VARCHAR(100) NOT NULL,
-    `email`                    VARCHAR(255) NOT NULL,
-    `phone`                    VARCHAR(20)  DEFAULT NULL,
-    `phone_encrypted`          TEXT         DEFAULT NULL,
-    `avatar`                   VARCHAR(255) DEFAULT NULL,
-    `password`                 VARCHAR(255) NOT NULL,
-    `role`                     VARCHAR(50)  NOT NULL DEFAULT 'user',
-    `google_id`                VARCHAR(255) DEFAULT NULL,
-    `email_verified`           TINYINT(1)   NOT NULL DEFAULT 0,
-    `mfa_enabled`              TINYINT(1)   NOT NULL DEFAULT 0,
-    `mfa_secret_encrypted`     TEXT         DEFAULT NULL,
-    `mfa_recovery_codes_hash`  TEXT         DEFAULT NULL,
-    `verification_otp_hash`    VARCHAR(255) DEFAULT NULL,
-    `verification_otp_expires` DATETIME     DEFAULT NULL,
-    `reset_otp_hash`           VARCHAR(255) DEFAULT NULL,
-    `reset_otp_expires`        DATETIME     DEFAULT NULL,
-    `otp_attempts`             INT          NOT NULL DEFAULT 0,
-    `otp_last_sent`            DATETIME     DEFAULT NULL,
-    `failed_login_attempts`    INT          NOT NULL DEFAULT 0,
-    `lockout_until`            DATETIME     DEFAULT NULL,
-    `is_active`                TINYINT(1)   NOT NULL DEFAULT 1,
-    `last_password_verified_at` DATETIME    DEFAULT NULL,
-    `risk_score`               INT          NOT NULL DEFAULT 0,
-    `verification_token`       VARCHAR(255) DEFAULT NULL,
-    `verification_expires`     DATETIME     DEFAULT NULL,
-    `created_at`               TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE `users` (
+    `id`                        INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `fullname`                  VARCHAR(100) NOT NULL,
+    `email`                     VARCHAR(255) NOT NULL,
+    `phone`                     VARCHAR(20)  DEFAULT NULL,
+    `phone_encrypted`           TEXT         DEFAULT NULL,
+    `avatar`                    VARCHAR(255) DEFAULT NULL,
+    `password`                  VARCHAR(255) NOT NULL,
+    `role`                      VARCHAR(50)  NOT NULL DEFAULT 'user',
+    `google_id`                 VARCHAR(255) DEFAULT NULL,
+    `email_verified`            TINYINT(1)   NOT NULL DEFAULT 0,
+    `mfa_enabled`               TINYINT(1)   NOT NULL DEFAULT 0,
+    `mfa_secret_encrypted`      TEXT         DEFAULT NULL,
+    `mfa_recovery_codes_hash`   TEXT         DEFAULT NULL,
+    `verification_otp_hash`     VARCHAR(255) DEFAULT NULL,
+    `verification_otp_expires`  DATETIME     DEFAULT NULL,
+    `reset_otp_hash`            VARCHAR(255) DEFAULT NULL,
+    `reset_otp_expires`         DATETIME     DEFAULT NULL,
+    `otp_attempts`              INT          NOT NULL DEFAULT 0,
+    `otp_last_sent`             DATETIME     DEFAULT NULL,
+    `failed_login_attempts`     INT          NOT NULL DEFAULT 0,
+    `lockout_until`             DATETIME     DEFAULT NULL,
+    `is_active`                 TINYINT(1)   NOT NULL DEFAULT 1,
+    `last_password_verified_at` DATETIME     DEFAULT NULL,
+    `risk_score`                INT          NOT NULL DEFAULT 0,
+    `verification_token`        VARCHAR(255) DEFAULT NULL,
+    `verification_expires`      DATETIME     DEFAULT NULL,
+    `created_at`                TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uq_users_email` (`email`),
     KEY `idx_users_role` (`role`),
@@ -48,7 +60,7 @@ CREATE TABLE IF NOT EXISTS `users` (
 -- ------------------------------------------------------------------------------
 -- 2. PASSWORD RESETS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `password_resets` (
+CREATE TABLE `password_resets` (
     `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `user_id`    INT UNSIGNED NOT NULL,
     `token_hash` VARCHAR(255) NOT NULL,
@@ -63,7 +75,7 @@ CREATE TABLE IF NOT EXISTS `password_resets` (
 -- ------------------------------------------------------------------------------
 -- 3. SECURITY AUDIT LOGS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `security_logs` (
+CREATE TABLE `security_logs` (
     `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `user_id`    INT UNSIGNED DEFAULT NULL,
     `event_type` VARCHAR(100) NOT NULL,
@@ -82,7 +94,7 @@ CREATE TABLE IF NOT EXISTS `security_logs` (
 -- ------------------------------------------------------------------------------
 -- 4. RATE LIMITS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `rate_limits` (
+CREATE TABLE `rate_limits` (
     `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `rate_key`      VARCHAR(255) NOT NULL,
     `action`        VARCHAR(100) NOT NULL,
@@ -95,9 +107,9 @@ CREATE TABLE IF NOT EXISTS `rate_limits` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------------------------
--- 5. USER SESSIONS TABLE (Active Session Tracking & Remote Revocation)
+-- 5. USER SESSIONS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `user_sessions` (
+CREATE TABLE `user_sessions` (
     `id`                 INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `user_id`            INT UNSIGNED NOT NULL,
     `session_token_hash` VARCHAR(64)  NOT NULL,
@@ -115,7 +127,7 @@ CREATE TABLE IF NOT EXISTS `user_sessions` (
 -- ------------------------------------------------------------------------------
 -- 6. SCOPED API KEYS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `api_keys` (
+CREATE TABLE `api_keys` (
     `id`           INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `user_id`      INT UNSIGNED NOT NULL,
     `key_name`     VARCHAR(100) NOT NULL,
@@ -134,7 +146,7 @@ CREATE TABLE IF NOT EXISTS `api_keys` (
 -- ------------------------------------------------------------------------------
 -- 7. RISK MONITORING & CONTINUOUS ACCESS EVALUATION
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `risk_events` (
+CREATE TABLE `risk_events` (
     `id`          INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `user_id`     INT UNSIGNED DEFAULT NULL,
     `ip_address`  VARCHAR(45)  NOT NULL,
@@ -152,7 +164,7 @@ CREATE TABLE IF NOT EXISTS `risk_events` (
 -- ------------------------------------------------------------------------------
 -- 8. PRIVACY & GDPR DSAR REQUESTS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `privacy_requests` (
+CREATE TABLE `privacy_requests` (
     `id`           INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `user_id`      INT UNSIGNED NOT NULL,
     `request_type` ENUM('EXPORT', 'DELETE', 'RECTIFY') NOT NULL,
@@ -168,7 +180,7 @@ CREATE TABLE IF NOT EXISTS `privacy_requests` (
 -- ------------------------------------------------------------------------------
 -- 9. CONTENT SECURITY POLICY (CSP) VIOLATION REPORTS
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `csp_reports` (
+CREATE TABLE `csp_reports` (
     `id`                 INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `document_uri`       VARCHAR(255) DEFAULT NULL,
     `referrer`           VARCHAR(255) DEFAULT NULL,
@@ -186,7 +198,7 @@ CREATE TABLE IF NOT EXISTS `csp_reports` (
 -- ------------------------------------------------------------------------------
 -- 10. WEBAUTHN / PASSKEYS CREDENTIALS TABLE
 -- ------------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `user_credentials` (
+CREATE TABLE `user_credentials` (
     `id`               INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `user_id`          INT UNSIGNED NOT NULL,
     `credential_id`    VARCHAR(255) NOT NULL,
@@ -201,14 +213,13 @@ CREATE TABLE IF NOT EXISTS `user_credentials` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------------------------
--- SEED DEFAULT USERS (Passwords hashed using standard bcrypt/password_hash)
+-- SEED DEFAULT USERS (Standard passwords for testing)
 -- Demo User:    demo@gmail.com    / Password: TestPassword@123
 -- System Admin: admin@gmail.com   / Password: AdminPassword@123
 -- ------------------------------------------------------------------------------
 INSERT INTO `users` (`fullname`, `email`, `password`, `role`, `email_verified`, `is_active`)
 VALUES 
 ('Demo User', 'demo@gmail.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'user', 1, 1),
-('System Admin', 'admin@gmail.com', '$2y$10$eWJq2u4xMhRjS2yN6Uq7.OCiVzLq4E2/7a2q4k3p5x1v8m9n0b2c1', 'admin', 1, 1)
-ON DUPLICATE KEY UPDATE `email_verified` = 1, `is_active` = 1;
+('System Admin', 'admin@gmail.com', '$2y$10$eWJq2u4xMhRjS2yN6Uq7.OCiVzLq4E2/7a2q4k3p5x1v8m9n0b2c1', 'admin', 1, 1);
 
 SET FOREIGN_KEY_CHECKS = 1;
