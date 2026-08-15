@@ -1,0 +1,19 @@
+# Deny directory indexing
+Options -Indexes
+
+# Block execution of PHP and executable scripts in uploads directory
+<FilesMatch "\.(php|phtml|php3|php4|php5|php7|phps|exe|sh|bat|pl|py|cgi)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Disable PHP engine execution inside uploads directory
+<IfModule mod_php.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php7.c>
+    php_flag engine off
+</IfModule>
+<IfModule mod_php8.c>
+    php_flag engine off
+</IfModule>

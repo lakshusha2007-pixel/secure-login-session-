@@ -20,8 +20,16 @@ $email = trim($_GET['email'] ?? $_POST['email'] ?? '');
 $error = '';
 $info  = '';
 
+$otpRemaining = 0;
+if (!empty($_SESSION['reset_otp'])
+    && isset($_SESSION['reset_otp']['email'], $_SESSION['reset_otp']['sent_at'])
+    && strtolower(trim($_SESSION['reset_otp']['email'])) === strtolower(trim($email))) {
+    $otpLifetime  = (int)($_SESSION['reset_otp']['lifetime'] ?? 60);
+    $otpRemaining = max(0, $otpLifetime - (time() - (int)$_SESSION['reset_otp']['sent_at']));
+}
+
 if (isset($_GET['sent'])) {
-    $info = 'If an account matches that email address, a 6-digit password reset OTP code has been sent. Please check your inbox.';
+    $info = 'If an account matches that email address, a 6-digit password reset OTP code has been sent. Please check your inbox. It expires in 60 seconds.';
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -61,6 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $updateUser->close();
 
                 $_SESSION['flash_success'] = 'Your password has been reset successfully! Please sign in with your new password.';
+                unset($_SESSION['reset_otp']);
                 header('Location: login.php');
                 exit;
             }
@@ -102,6 +111,11 @@ require_once __DIR__ . '/includes/header.php';
                    pattern="[0-9]{6}" maxlength="6" required
                    style="font-size: 1.4rem; letter-spacing: 5px; text-align: center; font-weight: bold;"
                    placeholder="------">
+            <?php if (!empty($_SESSION['reset_otp']['email']) && strtolower(trim($_SESSION['reset_otp']['email'])) === strtolower(trim($email))): ?>
+                <small id="otp-timer" data-remaining="<?php echo (int)$otpRemaining; ?>" style="display:block; margin-top:0.4rem; color:var(--text-muted); font-size:0.8rem;">
+                    Your OTP code expires in <strong id="otp-count"><?php echo (int)$otpRemaining; ?></strong> second(s).
+                </small>
+            <?php endif; ?>
         </div>
 
         <!-- Password (8 to 12 Chars) -->
@@ -130,9 +144,11 @@ require_once __DIR__ . '/includes/header.php';
 
         <button type="submit" class="btn btn-primary">Update Password &rarr;</button>
         <p class="form-footer">
+            <a href="forgot_password.php">Request a new OTP code</a> &middot;
             <a href="login.php">&larr; Back to Sign In</a>
         </p>
     </form>
 </div>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
+

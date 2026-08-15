@@ -15,6 +15,21 @@
  * ----------------------------------------------------------------------------
  */
 
+// Load production error and exception handler
+require_once __DIR__ . '/../includes/error_handler.php';
+
+// Enforce HTTPS Redirection (Site-wide Transport Security)
+$isHttps  = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ||
+            (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+$hostHeader = $_SERVER['HTTP_HOST'] ?? '';
+$hostName   = explode(':', $hostHeader)[0];
+
+if (!$isHttps && !empty($hostHeader) && !in_array($hostName, ['localhost', '127.0.0.1'], true)) {
+    $redirectUrl = 'https://' . $hostHeader . $_SERVER['REQUEST_URI'];
+    header('Location: ' . $redirectUrl, true, 301);
+    exit;
+}
+
 // --- STEP 1: Secure the session cookie ---------------------------------------
 /**
  * session_set_cookie_params() tells PHP exactly how the session cookie must

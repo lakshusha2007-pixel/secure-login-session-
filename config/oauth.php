@@ -20,11 +20,17 @@ if (!defined('GOOGLE_CLIENT_SECRET')) {
 }
 
 if (!defined('GOOGLE_REDIRECT_URI')) {
-    // Dynamic fallback matching current host (works for localhost and live domains)
     $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $host     = $_SERVER['HTTP_HOST'] ?? 'localhost:8000';
-    $defaultRedirect = $protocol . '://' . $host . '/oauth_callback.php';
-    define('GOOGLE_REDIRECT_URI', getenv('GOOGLE_REDIRECT_URI') ?: $defaultRedirect);
+    $dynamicRedirect = $protocol . '://' . $host . '/oauth_callback.php';
+    $envRedirect     = getenv('GOOGLE_REDIRECT_URI') ?: '';
+    
+    // If env redirect matches host or is empty, or running locally, dynamically match host port
+    if (empty($envRedirect) || str_contains($host, 'localhost') || str_contains($host, '127.0.0.1')) {
+        define('GOOGLE_REDIRECT_URI', $dynamicRedirect);
+    } else {
+        define('GOOGLE_REDIRECT_URI', $envRedirect);
+    }
 }
 
 /**
@@ -51,6 +57,12 @@ function fetch_google_user_info(string $code): ?array
 {
     // If credentials are still placeholders, return simulated profile for local test mode if enabled
     if (GOOGLE_CLIENT_ID === 'YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com') {
+        return null;
+    }
+
+    // cURL extension is required for the Google token/userinfo calls.
+    if (!function_exists('curl_init')) {
+        error_log('Google OAuth requires the PHP cURL extension (php_curl).');
         return null;
     }
 

@@ -25,15 +25,56 @@
  * ============================================================================
  */
 
-// Load the secure session configuration (must run before ANY output).
-require_once __DIR__ . '/../config/session.php';
-
-// Load the database connection (needed for login queries).
-require_once __DIR__ . '/../config/database.php';
+// Load modular security architecture & configuration
+require_once __DIR__ . '/security.php';
 
 // Load mail and oauth configurations
 require_once __DIR__ . '/../config/mail.php';
 require_once __DIR__ . '/../config/oauth.php';
+
+
+/* ----------------------------------------------------------------------------
+ *  0) HASHING & PASSWORD ALGORITHM HELPERS (ARGON2ID / BCRYPT)
+ * ----------------------------------------------------------------------------
+ *  Hashes passwords using Argon2id (`PASSWORD_ARGON2ID`) if supported by the
+ *  PHP build, with fallback to bcrypt (`PASSWORD_BCRYPT` with cost 12).
+ *  Salting is handled automatically and cryptographically by password_hash().
+ */
+function hash_password(string $password): string
+{
+    if (defined('PASSWORD_ARGON2ID')) {
+        return password_hash($password, PASSWORD_ARGON2ID, [
+            'memory_cost' => 65536, // 64 MB
+            'time_cost'   => 4,     // 4 iterations
+            'threads'     => 2,     // 2 parallelism threads
+        ]);
+    }
+    return password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+}
+
+/**
+ * Checks if a stored password hash needs upgrading (e.g., from bcrypt to Argon2id).
+ * Upgrades the hash in the database transparently upon successful login.
+ */
+function check_and_upgrade_password(mysqli $conn, int $userId, string $password, string $currentHash): void
+{
+    $algo    = defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_BCRYPT;
+    $options = defined('PASSWORD_ARGON2ID') ? ['memory_cost' => 65536, 'time_cost' => 4, 'threads' => 2] : ['cost' => 12];
+
+    if (password_needs_rehash($currentHash, $algo, $options)) {
+        $newHash = hash_password($password);
+        $stmt    = $conn->prepare('UPDATE users SET password = ? WHERE id = ?');
+        if ($stmt) {
+            $stmt->bind_param('si', $newHash, $userId);
+            $stmt->execute();
+            $stmt->close();
+            log_security_event('PASSWORD_REHASH_UPGRADED', [
+                'user_id' => $userId,
+                'algo'    => defined('PASSWORD_ARGON2ID') ? 'Argon2id' : 'bcrypt'
+            ], $userId, 'INFO');
+        }
+    }
+}
 
 /* ----------------------------------------------------------------------------
  *  1) e() — XSS-PREVENTION OUTPUT HELPER
@@ -118,17 +159,17 @@ function regenerate_session(): void
  * ============================================================================
  *  Idea:
  *      - Allow a MAXIMUM of 3 failed attempts for the SAME email address / identity.
- *      - After 3 failed attempts, automatically INACTIVATE / LOCK login attempts
- *        for 20 minutes (1200 seconds).
+ *      - After 3 failed attempts, automatically INACTIVATE the account for
+ *        24 hours (86400 seconds).
  *      - Show a generic message: "Too many login attempts. Please try again later."
- *      - Automatically reset/reactivate after 20 minutes elapse or when login SUCCEEDS.
+ *      - Automatically reactivate after 24 hours elapse or when login SUCCEEDS.
  * ==========================================================================*/
 
 // Maximum failed attempts before locking (3 attempts).
 const MAX_ATTEMPTS    = 3;
 
-// Lock duration in seconds (20 minutes = 1200 seconds).
-const LOCK_SECONDS    = 1200;
+// Inactive duration in seconds (24 hours = 86400 seconds).
+const LOCK_SECONDS    = 86400;
 
 // Session array key where attempt data lives.
 const ATTEMPT_KEY     = 'login_attempts';
@@ -225,13 +266,13 @@ function reset_failed_attempts(string $email): void
 
 /**
  * 8b) is_db_account_locked(mysqli $conn, string $identity): array
- * Checks the database for persistent 20-minute lockout state.
+ * Checks the database for the persistent 24-hour inactive state.
  * Returns ['is_locked' => bool, 'remaining' => int].
  */
 function is_db_account_locked(mysqli $conn, string $identity): array
 {
     $clean = strtolower(trim($identity));
-    $stmt = $conn->prepare('SELECT id, failed_login_attempts, lockout_until, TIMESTAMPDIFF(SECOND, NOW(), lockout_until) AS remaining_sec FROM users WHERE LOWER(email) = ? OR LOWER(fullname) = ? LIMIT 1');
+    $stmt = $conn->prepare('SELECT id, failed_login_attempts, lockout_until, is_active, TIMESTAMPDIFF(SECOND, NOW(), lockout_until) AS remaining_sec FROM users WHERE LOWER(email) = ? OR LOWER(fullname) = ? LIMIT 1');
     if (!$stmt) {
         return ['is_locked' => false, 'remaining' => 0];
     }
@@ -247,13 +288,13 @@ function is_db_account_locked(mysqli $conn, string $identity): array
 
     $remainingSec = (int)($user['remaining_sec'] ?? 0);
 
-    if ($user['lockout_until'] !== null && $remainingSec > 0) {
+    if ($remainingSec > 0) {
         return ['is_locked' => true, 'remaining' => $remainingSec];
     }
 
-    // Auto-unlock if 20 minutes have elapsed
-    if ($user['lockout_until'] !== null && $remainingSec <= 0) {
-        $resetStmt = $conn->prepare('UPDATE users SET failed_login_attempts = 0, lockout_until = NULL WHERE id = ?');
+    // Auto-reactivate if the 24-hour inactive period has elapsed
+    if ($user['lockout_until'] !== null || (int)($user['is_active'] ?? 1) === 0) {
+        $resetStmt = $conn->prepare('UPDATE users SET failed_login_attempts = 0, lockout_until = NULL, is_active = 1 WHERE id = ?');
         if ($resetStmt) {
             $resetStmt->bind_param('i', $user['id']);
             $resetStmt->execute();
@@ -266,8 +307,8 @@ function is_db_account_locked(mysqli $conn, string $identity): array
 
 /**
  * 8c) record_db_failed_attempt(mysqli $conn, string $identity): int
- * Increments failed_login_attempts in users table and locks for 20 minutes when reaching MAX_ATTEMPTS (3).
- * Returns updated attempt count.
+ * Increments failed_login_attempts in users table and inactivates the account for
+ * 24 hours when reaching MAX_ATTEMPTS (3). Returns updated attempt count.
  */
 function record_db_failed_attempt(mysqli $conn, string $identity): int
 {
@@ -296,7 +337,7 @@ function record_db_failed_attempt(mysqli $conn, string $identity): int
     $attempts++;
 
     if ($attempts >= MAX_ATTEMPTS) {
-        $upd = $conn->prepare('UPDATE users SET failed_login_attempts = ?, lockout_until = DATE_ADD(NOW(), INTERVAL 20 MINUTE) WHERE id = ?');
+        $upd = $conn->prepare('UPDATE users SET failed_login_attempts = ?, lockout_until = DATE_ADD(NOW(), INTERVAL 24 HOUR), is_active = 0 WHERE id = ?');
         if ($upd) {
             $upd->bind_param('ii', $attempts, $user['id']);
             $upd->execute();
@@ -316,11 +357,11 @@ function record_db_failed_attempt(mysqli $conn, string $identity): int
 
 /**
  * 8d) reset_db_failed_attempts(mysqli $conn, int $userId): void
- * Clears failed login attempts and 20-minute lockout for user upon successful login.
+ * Clears failed login attempts and reactivates the account upon successful login.
  */
 function reset_db_failed_attempts(mysqli $conn, int $userId): void
 {
-    $stmt = $conn->prepare('UPDATE users SET failed_login_attempts = 0, lockout_until = NULL WHERE id = ?');
+    $stmt = $conn->prepare('UPDATE users SET failed_login_attempts = 0, lockout_until = NULL, is_active = 1 WHERE id = ?');
     if ($stmt) {
         $stmt->bind_param('i', $userId);
         $stmt->execute();
@@ -329,57 +370,9 @@ function reset_db_failed_attempts(mysqli $conn, int $userId): void
 }
 
 /* ============================================================================
- *  CSRF PROTECTION (bonus hardening)
- * ============================================================================
- *  SameSite=Lax already blocks cross-site form POSTs, and login/logout do not
- *  change data in a stateful way, but we add a classic synchronizer token
- *  anyway for defence-in-depth and because it is the accepted best practice
- *  for any form that performs an action.
- *
- *  How it works:
- *      1. The page embeds a hidden token that is stored in the SESSION.
- *      2. When the form is submitted, the server compares the submitted token
- *         with the session token using hash_equals() (timing-safe compare).
- *      3. A cross-site attacker cannot read our session, so they cannot know
- *         the token -> forged submissions are rejected.
- * ==========================================================================*/
+ *  CSRF Protection is loaded via includes/csrf.php
+ * ============================================================================ */
 
-/**
- * 9) csrf_token(): string
- * Returns the current CSRF token for this session, generating one if needed.
- * (Must be called after the session has started.)
- */
-function csrf_token(): string
-{
-    if (empty($_SESSION['csrf_token'])) {
-        // bin2hex(random_bytes(32)) creates 32 cryptographically-random bytes
-        // expressed as a 64-character hex string. Unpredictable for attackers.
-        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
-    }
-    return $_SESSION['csrf_token'];
-}
-
-/**
- * 10) csrf_field(): string
- * Returns the ready-to-print hidden input for use inside a <form>.
- */
-function csrf_field(): string
-{
-    return '<input type="hidden" name="csrf_token" value="' . e(csrf_token()) . '">';
-}
-
-/**
- * 11) verify_csrf(string $submitted): bool
- * Checks a submitted token against the stored one. Uses hash_equals() so the
- * comparison time does not depend on the token contents (timing-safe).
- */
-function verify_csrf(string $submitted): bool
-{
-    if (empty($_SESSION['csrf_token']) || $submitted === '') {
-        return false;
-    }
-    return hash_equals($_SESSION['csrf_token'], $submitted);
-}
 
 /* ============================================================================
  *  OTP (TWO-FACTOR AUTHENTICATION) HELPERS
@@ -470,6 +463,7 @@ function send_verification_otp(int $userId, string $email, string $fullname): ar
         'user_id'  => $userId,
         'fullname' => $fullname,
         'email'    => $email,
+        'sent_at'  => time(),
         'expires'  => time() + 60,
     ];
 
@@ -516,7 +510,7 @@ function verify_email_otp(int $userId, string $inputOtp): array
     }
 
     $inputOtp = trim($inputOtp);
-    $isValid  = password_verify($inputOtp, $user['verification_otp_hash']) || ($inputOtp === '123456');
+    $isValid  = password_verify($inputOtp, $user['verification_otp_hash']);
 
     if (!$isValid) {
         // Increment failed attempt counter
@@ -586,6 +580,12 @@ function send_password_reset_otp(string $email): array
     $updStmt->execute();
     $updStmt->close();
 
+    $_SESSION['reset_otp'] = [
+        'email'    => strtolower($user['email']),
+        'sent_at'  => time(),
+        'lifetime' => 60,
+    ];
+
     // Send Reset OTP email
     $subject  = 'Password Reset OTP Code — SecureAuth';
     $bodyHtml = '
@@ -639,7 +639,7 @@ function verify_password_reset_otp(string $email, string $inputOtp): array
     }
 
     $inputOtp = trim($inputOtp);
-    $isValid  = password_verify($inputOtp, $user['reset_otp_hash']) || ($inputOtp === '123456');
+    $isValid  = password_verify($inputOtp, $user['reset_otp_hash']);
 
     if (!$isValid) {
         $incStmt = $conn->prepare('UPDATE users SET otp_attempts = otp_attempts + 1 WHERE id = ?');
@@ -649,6 +649,8 @@ function verify_password_reset_otp(string $email, string $inputOtp): array
 
         return ['success' => false, 'message' => 'Invalid OTP code. Please check and try again.'];
     }
+
+    unset($_SESSION['reset_otp']);
 
     return ['success' => true, 'user' => $user];
 }
@@ -724,19 +726,19 @@ function is_proper_gmail(string $email, ?string &$errorMsg = null): bool
     $email = strtolower(trim($email));
 
     if ($email === '') {
-        $errorMsg = 'Invalid credentials.';
+        $errorMsg = 'Email address is required.';
         return false;
     }
 
     // Must be valid email format
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        $errorMsg = 'Invalid credentials.';
+        $errorMsg = 'Please enter a valid email address.';
         return false;
     }
 
     // Must end with @gmail.com or @googlemail.com
     if (!preg_match('/@(gmail\.com|googlemail\.com)$/i', $email)) {
-        $errorMsg = 'Invalid credentials.';
+        $errorMsg = 'Please use a Gmail address (e.g. you@gmail.com).';
         return false;
     }
 
@@ -746,19 +748,19 @@ function is_proper_gmail(string $email, ?string &$errorMsg = null): bool
 
     // Gmail username length rule (3 to 30 characters)
     if ($len < 3 || $len > 30) {
-        $errorMsg = 'Invalid credentials.';
+        $errorMsg = 'Gmail username must be between 3 and 30 characters.';
         return false;
     }
 
     // Allowed characters: letters, numbers, dot. Dot cannot be first/last or consecutive.
     if (!preg_match('/^[a-z0-9](\.?[a-z0-9]){1,28}[a-z0-9]$/i', $prefix) && $len > 1) {
-        $errorMsg = 'Invalid credentials.';
+        $errorMsg = 'Gmail username can only contain letters, numbers and dots (no leading, trailing or consecutive dots).';
         return false;
     }
 
     // 1) Key-mashing check: 5 or more consecutive consonants (e.g., dblvvdlf in lieruujdblvvdlfi123)
     if (preg_match('/[bcdfghjklmnpqrstvwxz]{5,}/i', $prefix)) {
-        $errorMsg = 'Invalid credentials.';
+        $errorMsg = 'That Gmail username looks like random typing. Please enter a realistic username.';
         return false;
     }
 
@@ -766,14 +768,14 @@ function is_proper_gmail(string $email, ?string &$errorMsg = null): bool
     $keyMashes = ['qwerty', 'wertyu', 'ertyui', 'rtyuio', 'tyuiop', 'asdfgh', 'sdfghj', 'dfghjk', 'fghjkl', 'zxcvbn', 'xcvbnm', '123456', '234567', '345678', '456789'];
     foreach ($keyMashes as $mash) {
         if (str_contains($prefix, $mash)) {
-            $errorMsg = 'Invalid credentials.';
+            $errorMsg = 'That Gmail username looks like a keyboard pattern (e.g. qwerty). Please choose a realistic one.';
             return false;
         }
     }
 
     // 3) 4 or more repeated identical characters (e.g. aaaa, 1111)
     if (preg_match('/(.)\1{3,}/', $prefix)) {
-        $errorMsg = 'Invalid credentials.';
+        $errorMsg = 'That Gmail username contains too many repeated characters.';
         return false;
     }
 
@@ -782,7 +784,7 @@ function is_proper_gmail(string $email, ?string &$errorMsg = null): bool
     if (strlen($lettersOnly) >= 6) {
         $vowelsCount = preg_match_all('/[aeiouy]/i', $lettersOnly);
         if ($vowelsCount === 0) {
-            $errorMsg = 'Invalid credentials.';
+            $errorMsg = 'That Gmail username is not realistic. Please enter a proper name.';
             return false;
         }
     }
@@ -859,6 +861,53 @@ function send_password_reset_email(string $email, string $fullname, string $rawT
 
     return send_app_mail($email, $fullname, $subject, $bodyHtml, $resetUrl);
 }
+
+/**
+ * Enforces server-side Step-Up Authentication (Password Re-Verification).
+ * Redirects user to step_up.php?return_to=... if elevated authentication state
+ * is expired (older than $maxAgeSeconds, default 300 seconds / 5 minutes).
+ */
+function require_step_up(int $maxAgeSeconds = 300): void
+{
+    require_login();
+
+    $lastVerifiedAt = (int)($_SESSION['last_password_verified_at'] ?? 0);
+    $elapsed = time() - $lastVerifiedAt;
+
+    if ($lastVerifiedAt === 0 || $elapsed > $maxAgeSeconds) {
+        $requestUri = $_SERVER['REQUEST_URI'] ?? 'dashboard.php';
+        log_security_event('STEP_UP_AUTHENTICATION_REQUIRED', [
+            'user_id'     => $_SESSION['user_id'] ?? null,
+            'request_uri' => $requestUri,
+            'elapsed_sec' => $elapsed
+        ], $_SESSION['user_id'] ?? null, 'INFO');
+
+        // Resolve path to step_up.php cleanly
+        $scriptPath = $_SERVER['SCRIPT_NAME'] ?? '';
+        $prefix = (str_contains($scriptPath, '/api/') || str_contains($scriptPath, '/admin/')) ? '../' : '';
+
+        header('Location: ' . $prefix . 'step_up.php?return_to=' . urlencode($requestUri));
+        exit;
+    }
+}
+
+/**
+ * Automated token and log retention purge.
+ */
+function purge_expired_tokens_and_logs(mysqli $conn): void
+{
+    try {
+        $conn->query('UPDATE users SET verification_otp_hash = NULL, verification_otp_expires = NULL WHERE verification_otp_expires IS NOT NULL AND verification_otp_expires < NOW()');
+        $conn->query('UPDATE users SET reset_otp_hash = NULL, reset_otp_expires = NULL WHERE reset_otp_expires IS NOT NULL AND reset_otp_expires < NOW()');
+        $conn->query('DELETE FROM password_resets WHERE expires_at < NOW()');
+        $conn->query('DELETE FROM rate_limits WHERE lockout_until IS NOT NULL AND lockout_until < NOW()');
+        $conn->query("DELETE FROM security_logs WHERE created_at < DATE_SUB(NOW(), INTERVAL 90 DAY)");
+    } catch (Throwable $e) {
+        error_log('Token purge failed: ' . $e->getMessage());
+    }
+}
+
+
 
 
 

@@ -1,0 +1,31 @@
+name: Security & SDLC Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  security_scan:
+    name: Security & SAST Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          extensions: mysqli, openssl, json, mbstring
+
+      - name: Validate Composer Manifest & Lockfile
+        run: composer validate --strict
+
+      - name: Run SAST Security Code Scan
+        run: php scripts/sast_scan.php
+
+      - name: Verify PHP Syntax
+        run: find . -name "*.php" ! -path "./vendor/*" -exec php -l {} \;

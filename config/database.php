@@ -54,6 +54,9 @@ try {
         `otp_last_sent`            DATETIME     DEFAULT NULL,
         `failed_login_attempts`    INT          NOT NULL DEFAULT 0,
         `lockout_until`            DATETIME     DEFAULT NULL,
+        `is_active`                TINYINT(1)   NOT NULL DEFAULT 1,
+        `verification_token`       VARCHAR(255) DEFAULT NULL,
+        `verification_expires`     DATETIME     DEFAULT NULL,
         `created_at`               TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (`id`),
         UNIQUE KEY `uq_users_email` (`email`),
@@ -64,9 +67,15 @@ try {
     // Auto-migrate: add missing columns in older schemas
     $columnsToEnsure = [
         'phone'                    => "VARCHAR(20) DEFAULT NULL AFTER `email`",
+        'phone_encrypted'          => "TEXT DEFAULT NULL AFTER `phone`",
+        'avatar'                   => "VARCHAR(255) DEFAULT NULL AFTER `phone_encrypted`",
         'google_id'                => "VARCHAR(255) DEFAULT NULL AFTER `role`",
+
         'email_verified'           => "TINYINT(1) NOT NULL DEFAULT 0 AFTER `google_id`",
-        'verification_otp_hash'    => "VARCHAR(255) DEFAULT NULL AFTER `email_verified`",
+        'mfa_enabled'              => "TINYINT(1) NOT NULL DEFAULT 0 AFTER `email_verified`",
+        'mfa_secret_encrypted'     => "TEXT DEFAULT NULL AFTER `mfa_enabled`",
+        'mfa_recovery_codes_hash'  => "TEXT DEFAULT NULL AFTER `mfa_secret_encrypted`",
+        'verification_otp_hash'    => "VARCHAR(255) DEFAULT NULL AFTER `mfa_recovery_codes_hash`",
         'verification_otp_expires' => "DATETIME DEFAULT NULL AFTER `verification_otp_hash`",
         'reset_otp_hash'           => "VARCHAR(255) DEFAULT NULL AFTER `verification_otp_expires`",
         'reset_otp_expires'        => "DATETIME DEFAULT NULL AFTER `reset_otp_hash`",
@@ -74,6 +83,10 @@ try {
         'otp_last_sent'            => "DATETIME DEFAULT NULL AFTER `otp_attempts`",
         'failed_login_attempts'    => "INT NOT NULL DEFAULT 0 AFTER `otp_last_sent`",
         'lockout_until'            => "DATETIME DEFAULT NULL AFTER `failed_login_attempts`",
+        'is_active'                => "TINYINT(1) NOT NULL DEFAULT 1 AFTER `lockout_until`",
+        'last_password_verified_at'=> "DATETIME DEFAULT NULL AFTER `is_active`",
+        'verification_token'       => "VARCHAR(255) DEFAULT NULL AFTER `last_password_verified_at`",
+        'verification_expires'     => "DATETIME DEFAULT NULL AFTER `verification_token`",
     ];
 
     foreach ($columnsToEnsure as $colName => $colDef) {
@@ -101,10 +114,57 @@ try {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
     $conn->query($resetTableSql);
 
-    // 4. Ensure demo user exists (Name: Demo User, Email demo@gmail.com, Phone +91, verified)
+    // 4. Ensure security_logs audit table exists
+    $logsTableSql = "CREATE TABLE IF NOT EXISTS `security_logs` (
+        `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        `user_id`    INT UNSIGNED DEFAULT NULL,
+        `event_type` VARCHAR(100) NOT NULL,
+        `ip_address` VARCHAR(45)  NOT NULL,
+        `user_agent` TEXT         DEFAULT NULL,
+        `details`    TEXT         DEFAULT NULL,
+        `severity`   VARCHAR(20)  NOT NULL DEFAULT 'INFO',
+        `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (`id`),
+        KEY `idx_logs_event` (`event_type`),
+        KEY `idx_logs_user` (`user_id`),
+        KEY `idx_logs_created` (`created_at`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+    $conn->query($logsTableSql);
+
+    // 5. Ensure rate_limits table exists
+    $rateTableSql = "CREATE TABLE IF NOT EXISTS `rate_limits` (
+        `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        `rate_key`      VARCHAR(255) NOT NULL,
+        `action`        VARCHAR(100) NOT NULL,
+        `attempts`      INT NOT NULL DEFAULT 1,
+        `last_attempt`  DATETIME NOT NULL,
+        `lockout_until` DATETIME DEFAULT NULL,
+        PRIMARY KEY (`id`),
+        UNIQUE KEY `uq_rate_key_action` (`rate_key`, `action`),
+        KEY `idx_rate_lockout` (`lockout_until`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+    $conn->query($rateTableSql);
+
+    // 6. Ensure user_credentials table exists (for WebAuthn Passkeys)
+    $credTableSql = "CREATE TABLE IF NOT EXISTS `user_credentials` (
+        `id`            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+        `user_id`       INT UNSIGNED NOT NULL,
+        `credential_id` VARCHAR(255) NOT NULL,
+        `public_key`    TEXT NOT NULL,
+        `sign_count`    INT UNSIGNED NOT NULL DEFAULT 0,
+        `transports`    VARCHAR(255) DEFAULT NULL,
+        `created_at`    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (`id`),
+        UNIQUE KEY `uq_credential_id` (`credential_id`),
+        KEY `idx_cred_user_id` (`user_id`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+    $conn->query($credTableSql);
+
+
+    // 6. Ensure demo user exists (Name: Demo User, Email demo@gmail.com, Phone +91, verified)
     $checkUser = $conn->query("SELECT id FROM users WHERE email = 'demo@gmail.com'");
     if ($checkUser && $checkUser->num_rows === 0) {
-        $demoHash = password_hash('TestPassword@123', PASSWORD_DEFAULT);
+        $demoHash = password_hash('TestPassword@123', defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_DEFAULT);
         $stmt = $conn->prepare("INSERT INTO users (fullname, email, phone, password, role, email_verified) VALUES (?, ?, ?, ?, ?, 1)");
         $name  = 'Demo User';
         $email = 'demo@gmail.com';
@@ -115,20 +175,29 @@ try {
         $stmt->close();
     }
 
+    // 7. Ensure demo admin exists (Name: System Admin, Email admin@gmail.com, role: admin)
+    $checkAdmin = $conn->query("SELECT id FROM users WHERE email = 'admin@gmail.com'");
+    if ($checkAdmin && $checkAdmin->num_rows === 0) {
+        $adminHash = password_hash('AdminPassword@123', defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_DEFAULT);
+        $stmt = $conn->prepare("INSERT INTO users (fullname, email, phone, password, role, email_verified) VALUES (?, ?, ?, ?, ?, 1)");
+        $name  = 'System Admin';
+        $email = 'admin@gmail.com';
+        $phone = '+919876543211';
+        $role  = 'admin';
+        $stmt->bind_param('sssss', $name, $email, $phone, $adminHash, $role);
+        $stmt->execute();
+        $stmt->close();
+    }
+
 }
 catch (mysqli_sql_exception $e) {
     error_log('Database connection failed: ' . $e->getMessage());
     die('
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 3rem auto; padding: 2rem; border: 1px solid #fecaca; background: #fef2f2; border-radius: 12px; color: #991b1b;">
-            <h2 style="margin-top:0;">&#9888; MySQL Database Connection Required</h2>
-            <p>Unable to connect to the MySQL database server (<code>' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . '</code>).</p>
+            <h2 style="margin-top:0;">&#9888; Database Service Unavailable</h2>
+            <p>We are currently unable to connect to the authentication database. Please ensure your MySQL server is running or contact the system administrator.</p>
             <hr style="border:0; border-top:1px solid #fca5a5; margin:1rem 0;">
-            <p><strong>How to fix this:</strong></p>
-            <ol>
-                <li>Open the <strong>XAMPP Control Panel</strong> and make sure <strong>MySQL</strong> is started (green indicator).</li>
-                <li>Or verify database credentials in <code>config/database.php</code>.</li>
-            </ol>
-            <p><a href="setup_check.php" style="color: #4f46e5; font-weight: bold;">Run System Setup Check &rarr;</a></p>
+            <p><strong>Troubleshooting:</strong> Make sure MySQL is active in your server control panel (e.g. XAMPP / MAMP / InfinityFree).</p>
         </div>
     ');
 }

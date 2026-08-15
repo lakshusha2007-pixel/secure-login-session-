@@ -1,0 +1,60 @@
+{
+    "bomFormat": "CycloneDX",
+    "specVersion": "1.4",
+    "serialNumber": "urn:uuid:cc9065c3-d105-4708-89e6-3385ded7cd06",
+    "metadata": {
+        "timestamp": "2026-08-15T07:45:04+02:00",
+        "tools": [
+            {
+                "name": "SecureAuth SBOM Generator",
+                "version": "2.0.0"
+            }
+        ],
+        "component": {
+            "name": "SecureAuth Login & Session Management Module",
+            "version": "2.0.0",
+            "type": "application"
+        }
+    },
+    "components": [
+        {
+            "type": "platform",
+            "name": "PHP",
+            "version": "8.0.30",
+            "licenses": [
+                "PHP-3.01"
+            ],
+            "description": "PHP Core Runtime Environment"
+        },
+        {
+            "type": "extension",
+            "name": "ext-mysqli",
+            "version": "8.0.30",
+            "status": "active"
+        },
+        {
+            "type": "extension",
+            "name": "ext-openssl",
+            "version": "8.0.30",
+            "status": "active"
+        },
+        {
+            "type": "extension",
+            "name": "ext-json",
+            "version": "8.0.30",
+            "status": "active"
+        },
+        {
+            "type": "extension",
+            "name": "ext-mbstring",
+            "version": "8.0.30",
+            "status": "active"
+        },
+        {
+            "type": "extension",
+            "name": "ext-curl",
+            "version": "8.0.30",
+            "status": "active"
+        }
+    ]
+}

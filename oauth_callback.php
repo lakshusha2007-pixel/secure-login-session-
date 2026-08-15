@@ -65,12 +65,24 @@ if ($googleEmail === '') {
     exit;
 }
 
+if (empty($googleUser['email_verified'])) {
+    $_SESSION['flash_error'] = 'This Google account email is not verified. Please verify it with Google and try again.';
+    header('Location: login.php');
+    exit;
+}
+
 // 1. Look up existing user by email address or google_id
-$stmt = $conn->prepare('SELECT id, fullname, email, role, email_verified, google_id FROM users WHERE LOWER(email) = ? OR (google_id IS NOT NULL AND google_id = ?) LIMIT 1');
+$stmt = $conn->prepare('SELECT id, fullname, email, phone, role, email_verified, google_id, is_active FROM users WHERE LOWER(email) = ? OR (google_id IS NOT NULL AND google_id = ?) LIMIT 1');
 $stmt->bind_param('ss', $googleEmail, $googleId);
 $stmt->execute();
 $existingUser = $stmt->get_result()->fetch_assoc();
 $stmt->close();
+
+if ($existingUser && (int)($existingUser['is_active'] ?? 1) === 0) {
+    $_SESSION['flash_error'] = 'Your account is currently inactive. Please try again after 24 hours.';
+    header('Location: login.php');
+    exit;
+}
 
 if ($existingUser) {
     // Existing user (verified or unverified) -> Link google_id and mark email_verified = 1
@@ -82,11 +94,13 @@ if ($existingUser) {
 
     $fullname = $existingUser['fullname'];
     $role     = $existingUser['role'];
+    $phone    = $existingUser['phone'];
 } else {
     // New Google account -> Create user with email_verified = 1 and google_id
     $randomPassword = generate_secure_token(16);
     $hashedPassword = password_hash($randomPassword, PASSWORD_DEFAULT);
     $role           = 'user';
+    $phone          = null;
 
     $insertStmt = $conn->prepare('INSERT INTO users (fullname, email, password, role, email_verified, google_id) VALUES (?, ?, ?, ?, 1, ?)');
     $insertStmt->bind_param('sssss', $googleName, $googleEmail, $hashedPassword, $role, $googleId);

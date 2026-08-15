@@ -49,13 +49,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pwdErrors = validate_password_strength($password);
 
         if (!validate_name_length($fullname)) {
-            $error = 'Invalid credentials.';
+            $error = 'Full name must be between 3 and 20 characters.';
         } elseif (!$isValidEmail) {
-            $error = 'Invalid credentials.';
+            $error = $gmailError !== '' ? $gmailError : 'Please enter a valid Gmail address.';
         } elseif (!empty($pwdErrors)) {
-            $error = 'Invalid credentials.';
+            $error = implode(' ', $pwdErrors);
         } elseif ($password !== $confirmPassword) {
-            $error = 'Invalid credentials.';
+            $error = 'Passwords do not match.';
         } else {
             // Check if email already registered
             $checkStmt = $conn->prepare('SELECT id FROM users WHERE email = ? LIMIT 1');
@@ -66,14 +66,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $checkStmt->close();
 
             if ($exists) {
-                $error = 'Invalid credentials.';
+                log_security_event('REGISTER_EMAIL_ALREADY_EXISTS', ['email' => $email], null, 'WARNING');
+                $error = 'This email address is already registered. Please sign in instead.';
             } else {
-                // Securely hash password using bcrypt
-                $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
-
-                // Generate secure random verification token (expires in 24 hours)
-                $verifyToken   = generate_secure_token(32);
-                $verifyExpires = date('Y-m-d H:i:s', time() + 86400);
+                // Securely hash password using Argon2id (or bcrypt fallback) with proper salting
+                $hashedPassword = hash_password($password);
 
                 // Prepared Statement: Insert new user with email_verified = 0
                 $role = 'user';
@@ -84,6 +81,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $newUserId = $insertStmt->insert_id;
                     $insertStmt->close();
 
+                    log_security_event('USER_REGISTERED', ['email' => $email, 'fullname' => $fullname], $newUserId, 'INFO');
+
                     // Generate 6-digit OTP, store salted hash in MySQL, and dispatch Gmail SMTP email
                     send_verification_otp($newUserId, $email, $fullname);
 
@@ -92,7 +91,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 } else {
                     $insertStmt->close();
-                    $error = 'Invalid credentials.';
+                    log_security_event('USER_REGISTRATION_FAILED', ['email' => $email], null, 'CRITICAL');
+                    $error = 'Could not create your account. Please try again.';
                 }
             }
         }
@@ -119,8 +119,8 @@ require_once __DIR__ . '/includes/header.php';
     <?php endif; ?>
 
     <!-- Continue with Google OAuth Button -->
-    <div style="margin-bottom: 1.5rem;">
-        <a class="btn btn-google" href="<?php echo e($googleAuthUrl); ?>" style="display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid #cbd5e1; background: #ffffff; color: #1e293b; font-weight: 600; text-decoration: none; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+    <div style="margin-bottom: 1.25rem;">
+        <a class="btn btn-google" href="<?php echo e($googleAuthUrl); ?>" style="display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; padding: 0.75rem 1rem; border-radius: var(--radius-sm); border: 1.5px solid var(--border); background: #ffffff; color: var(--text-main); font-weight: 600; text-decoration: none;">
             <svg width="20" height="20" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                 <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -131,30 +131,29 @@ require_once __DIR__ . '/includes/header.php';
         </a>
     </div>
 
-    <div style="display: flex; align-items: center; margin: 1.5rem 0; color: var(--text-muted, #94a3b8);">
-        <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
-        <span style="padding: 0 0.75rem; font-size: 0.85rem; text-transform: uppercase;">or</span>
-        <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
+    <div style="display: flex; align-items: center; margin: 1.25rem 0; color: var(--text-muted);">
+        <div style="flex: 1; height: 1px; background: var(--border);"></div>
+        <span style="padding: 0 0.75rem; font-size: 0.8rem; text-transform: uppercase;">or register with email</span>
+        <div style="flex: 1; height: 1px; background: var(--border);"></div>
     </div>
 
     <form id="register-form" method="post" action="register.php" autocomplete="off">
         <?php echo csrf_field(); ?>
 
-
         <div class="form-group">
             <label for="fullname">Profile Name <span style="font-weight:normal; color:var(--text-muted);">(3-20 chars)</span></label>
             <input class="form-control" type="text" id="fullname" name="fullname"
                    value="<?php echo e($fullname); ?>"
-                   minlength="3" maxlength="20" required>
+                   minlength="3" maxlength="20" required placeholder="Full Name">
         </div>
 
         <!-- Email Address (@gmail.com Fixed Right Addon) -->
         <div class="form-group">
-            <label for="email_prefix">Email Address</label>
+            <label for="email_prefix">Gmail Address</label>
             <div class="input-group">
                 <input class="form-control has-addon-right" type="text" id="email_prefix" name="email_prefix"
                        value="<?php echo e($emailPrefix); ?>"
-                       required maxlength="100">
+                       required maxlength="100" placeholder="username">
                 <span class="input-addon-right">@gmail.com</span>
             </div>
         </div>
@@ -165,9 +164,9 @@ require_once __DIR__ . '/includes/header.php';
             <div class="password-wrap">
                 <input class="form-control" type="password" id="password"
                        name="password"
-                       required minlength="8" maxlength="12">
+                       required minlength="8" maxlength="12" placeholder="••••••••">
                 <button type="button" class="toggle-password"
-                        data-target="password" aria-label="Show or hide password">&#128065;</button>
+                        data-target="password" aria-label="Show or hide password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
             </div>
         </div>
 
@@ -177,9 +176,9 @@ require_once __DIR__ . '/includes/header.php';
             <div class="password-wrap">
                 <input class="form-control" type="password" id="confirm_password"
                        name="confirm_password"
-                       required minlength="8" maxlength="12">
+                       required minlength="8" maxlength="12" placeholder="••••••••">
                 <button type="button" class="toggle-password"
-                        data-target="confirm_password" aria-label="Show or hide password">&#128065;</button>
+                        data-target="confirm_password" aria-label="Show or hide password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
             </div>
         </div>
 

@@ -23,28 +23,31 @@ if (!defined('MAIL_FROM_NAME'))  define('MAIL_FROM_NAME',  getenv('MAIL_FROM_NAM
 function send_app_mail(string $toEmail, string $toName, string $subject, string $bodyHtml): bool
 {
     $timestamp = date('Y-m-d H:i:s');
-    
+
+    // Send the email first so the log reflects the actual result.
+    if (MAIL_USERNAME !== '' && MAIL_PASSWORD !== '') {
+        $ok = send_smtp_socket(MAIL_HOST, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_FROM_EMAIL, MAIL_FROM_NAME, $toEmail, $toName, $subject, $bodyHtml);
+    } else {
+        // Fallback to native PHP mail()
+        $headers  = "MIME-Version: 1.0\r\n";
+        $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+        $headers .= "From: " . MAIL_FROM_NAME . " <" . MAIL_FROM_EMAIL . ">\r\n";
+        $headers .= "Reply-To: " . MAIL_FROM_EMAIL . "\r\n";
+
+        $ok = @mail($toEmail, $subject, $bodyHtml, $headers);
+    }
+
     // Log email dispatch event to logs/mail_outbox.log (without logging OTPs/passwords)
     $logDir = __DIR__ . '/../logs';
     if (!is_dir($logDir)) {
         @mkdir($logDir, 0777, true);
     }
     $logFile = $logDir . '/mail_outbox.log';
-    $logEntry = "[$timestamp] MAIL DISPATCH -> To: $toName <$toEmail> | Subject: $subject | Status: SENT\n";
+    $status  = $ok ? 'SENT' : 'FAILED';
+    $logEntry = "[$timestamp] MAIL DISPATCH -> To: $toName <$toEmail> | Subject: $subject | Status: $status\n";
     @file_put_contents($logFile, $logEntry, FILE_APPEND);
 
-    // If Gmail SMTP credentials are configured, send via SMTP Socket
-    if (MAIL_USERNAME !== '' && MAIL_PASSWORD !== '') {
-        return send_smtp_socket(MAIL_HOST, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_FROM_EMAIL, MAIL_FROM_NAME, $toEmail, $toName, $subject, $bodyHtml);
-    }
-
-    // Fallback to native PHP mail()
-    $headers  = "MIME-Version: 1.0\r\n";
-    $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
-    $headers .= "From: " . MAIL_FROM_NAME . " <" . MAIL_FROM_EMAIL . ">\r\n";
-    $headers .= "Reply-To: " . MAIL_FROM_EMAIL . "\r\n";
-
-    return @mail($toEmail, $subject, $bodyHtml, $headers);
+    return $ok;
 }
 
 /**

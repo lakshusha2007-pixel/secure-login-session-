@@ -11,7 +11,7 @@
  *      - Server-side lookup by Username (Full Name) OR Email address.
  *      - Prepared SQL Query (`SELECT id, fullname, email, phone, password, role, email_verified FROM users ...`).
  *      - `password_verify()` check.
- *      - Email verification check (`email_verified = 1`).
+ *      - 6-digit OTP emailed to the registered Gmail address (required before access).
  *      - Google OAuth 2.0 Integration button ("Continue with Google").
  *      - "Forgot Password?" recovery link.
  * ============================================================================
@@ -51,7 +51,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $submittedToken = $_POST['csrf_token'] ?? '';
     if (!verify_csrf($submittedToken)) {
-        error_log('CSRF token mismatch on login page from IP ' . ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
+        log_security_event('CSRF_TOKEN_MISMATCH', ['action' => 'login'], null, 'WARNING');
         $error = 'Invalid credentials.';
     } else {
         $identity = trim($_POST['identity'] ?? '');
@@ -63,7 +63,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $rawIdentity   = strtolower($identity);
 
         if ($identity === '' || $password === '') {
+            log_security_event('LOGIN_FAILED', ['identity' => $identity, 'reason' => 'empty_fields'], null, 'WARNING');
             $error = 'Invalid credentials.';
+        } elseif (function_exists('detect_sqli_pattern') && (detect_sqli_pattern($identity) || detect_sqli_pattern($password))) {
+            $att1  = record_failed_attempt($possibleEmail);
+            $att2  = record_failed_attempt($rawIdentity);
+            $currentAttempts = max($att1, $att2);
+            log_security_event('SQLI_PROBE_BLOCKED', ['identity' => $identity], null, 'ALERT');
+            
+            if ($currentAttempts >= MAX_ATTEMPTS) {
+                $error = 'Too many login attempts (Attempt 3 to 3). Account is inactive for 24 hours.';
+            } elseif ($currentAttempts === 2) {
+                $error = 'Invalid credentials (Attempt 2 to 3). You have 1 attempt remaining.';
+            } else {
+                $error = 'Invalid credentials (Attempt 1 to 3). You have 2 attempts remaining.';
+            }
         } else {
             $dbLock = is_db_account_locked($conn, $identity);
             $sessLock1 = is_login_locked($possibleEmail);
@@ -71,10 +85,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($dbLock['is_locked'] || $sessLock1 || $sessLock2) {
                 $lockTime = max($dbLock['remaining'], get_lock_remaining($possibleEmail), get_lock_remaining($rawIdentity));
-                $error    = 'Too many login attempts. Account is inactive for 20 minutes.';
+                log_security_event('LOCKOUT_BLOCKED_ATTEMPT', ['identity' => $identity, 'remaining_sec' => $lockTime], null, 'WARNING');
+                $error    = 'Too many login attempts. Account is inactive for 24 hours.';
             } else {
-                // Prepared Statement: lookup user by Email OR Username
-                $stmt = $conn->prepare('SELECT id, fullname, email, phone, password, role, email_verified FROM users WHERE LOWER(email) = ? OR LOWER(email) = ? OR LOWER(fullname) = ? LIMIT 1');
+                // Prepared Statement: lookup user by Email OR Username (Parameterized SQL Query)
+                $stmt = $conn->prepare('SELECT id, fullname, email, phone, password, role, email_verified, is_active FROM users WHERE LOWER(email) = ? OR LOWER(email) = ? OR LOWER(fullname) = ? LIMIT 1');
                 $stmt->bind_param('sss', $rawIdentity, $possibleEmail, $cleanIdentity);
                 $stmt->execute();
                 $result = $stmt->get_result();
@@ -83,17 +98,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $passwordOk = $user !== null && password_verify($password, $user['password']);
 
-                if ($passwordOk) {
+                if ($user !== null && (int)($user['is_active'] ?? 1) === 0) {
+                    log_security_event('INACTIVE_ACCOUNT_LOGIN_ATTEMPT', ['identity' => $identity, 'user_id' => $user['id']], (int)$user['id'], 'WARNING');
+                    $error = 'Your account is currently inactive. Please try again after 24 hours.';
+                } elseif ($passwordOk) {
+                    // Session Fixation Defence: Regenerate session ID immediately after valid credentials
+                    regenerate_session();
+
+                    // Transparently upgrade legacy bcrypt hash to Argon2id if supported
+                    check_and_upgrade_password($conn, (int)$user['id'], $password, $user['password']);
+
                     reset_failed_attempts($possibleEmail);
                     reset_failed_attempts($rawIdentity);
                     reset_db_failed_attempts($conn, (int)$user['id']);
 
-                    // Generate fresh 6-digit Gmail Verification OTP code & send via SMTP
-                    send_verification_otp((int)$user['id'], $user['email'], $user['fullname']);
+                    log_security_event('LOGIN_PASSWORD_VERIFIED', ['identity' => $identity, 'email' => $user['email']], (int)$user['id'], 'INFO');
 
-                    // Redirect user to Gmail OTP verification page
-                    header('Location: otp_verify.php?sent=1');
-                    exit;
+                    // Check if MFA enabled or Admin (Mandatory MFA for Admins)
+                    $isMfaActive = (int)($user['mfa_enabled'] ?? 0) === 1;
+                    $isAdminRole = strtolower($user['role'] ?? '') === 'admin';
+
+                    if ($isMfaActive) {
+                        $_SESSION['mfa_pending'] = [
+                            'user_id'  => (int)$user['id'],
+                            'fullname' => $user['fullname'],
+                            'email'    => $user['email'],
+                            'role'     => $user['role']
+                        ];
+                        header('Location: mfa_verify.php');
+                        exit;
+                    } elseif ($isAdminRole) {
+                        // Admin mandatory MFA enrollment
+                        $_SESSION['user_id']  = (int)$user['id'];
+                        $_SESSION['fullname'] = $user['fullname'];
+                        $_SESSION['email']    = $user['email'];
+                        $_SESSION['role']     = $user['role'];
+                        $_SESSION['last_password_verified_at'] = time();
+
+                        log_security_event('MFA_MANDATORY_ADMIN_REDIRECT', ['user_id' => (int)$user['id']], (int)$user['id'], 'WARNING');
+                        header('Location: mfa_enroll.php?mandatory_admin=1');
+                        exit;
+                    } else {
+                        // Generate fresh 6-digit Gmail Verification OTP code & send via SMTP
+                        send_verification_otp((int)$user['id'], $user['email'], $user['fullname']);
+
+                        // Redirect user to Gmail OTP verification page
+                        header('Location: otp_verify.php?sent=1');
+                        exit;
+                    }
                 } else {
                     $att1  = record_failed_attempt($possibleEmail);
                     $att2  = record_failed_attempt($rawIdentity);
@@ -101,14 +153,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $currentAttempts = max($att1, $att2, $dbAtt);
 
+                    log_security_event('LOGIN_FAILED', ['identity' => $identity, 'attempt_count' => $currentAttempts], $user ? (int)$user['id'] : null, 'WARNING');
+
                     if ($currentAttempts >= MAX_ATTEMPTS) {
                         $dbLock   = is_db_account_locked($conn, $identity);
                         $lockTime = max($dbLock['remaining'], get_lock_remaining($possibleEmail), get_lock_remaining($rawIdentity), LOCK_SECONDS);
-                        $error    = 'Too many login attempts (Attempt 3 of 3 failed). Account is inactive for 20 minutes.';
+                        log_security_event('LOCKOUT_TRIGGERED', ['identity' => $identity, 'lockout_seconds' => $lockTime], $user ? (int)$user['id'] : null, 'ALERT');
+                        $error    = 'Too many login attempts (Attempt 3 to 3). Account is inactive for 24 hours.';
                     } elseif ($currentAttempts === 2) {
-                        $error    = 'Invalid credentials (Attempt 2 of 3 failed). You have 1 attempt remaining.';
+                        $error    = 'Invalid credentials (Attempt 2 to 3). You have 1 attempt remaining.';
                     } else {
-                        $error    = 'Invalid credentials (Attempt 1 of 3 failed). You have 2 attempts remaining.';
+                        $error    = 'Invalid credentials (Attempt 1 to 3). You have 2 attempts remaining.';
                     }
                 }
             }
@@ -130,7 +185,7 @@ require_once __DIR__ . '/includes/header.php';
 
 <div class="card">
     <h2>Sign In to Your Account</h2>
-    <p class="card-sub">Enter your Gmail username or Full Name and password to continue.</p>
+    <p class="card-sub">Enter your Gmail address and password to continue.</p>
 
     <?php if ($successMsg !== ''): ?>
         <div class="alert alert-success"><?php echo e($successMsg); ?></div>
@@ -154,8 +209,8 @@ require_once __DIR__ . '/includes/header.php';
     <?php endif; ?>
 
     <!-- Continue with Google OAuth Button -->
-    <div style="margin-bottom: 1.5rem;">
-        <a class="btn btn-google" href="<?php echo e($googleAuthUrl); ?>" style="display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; padding: 0.75rem 1rem; border-radius: 8px; border: 1px solid #cbd5e1; background: #ffffff; color: #1e293b; font-weight: 600; text-decoration: none; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+    <div style="margin-bottom: 1.25rem;">
+        <a class="btn btn-google" href="<?php echo e($googleAuthUrl); ?>" style="display: flex; align-items: center; justify-content: center; gap: 0.75rem; width: 100%; padding: 0.75rem 1rem; border-radius: var(--radius-sm); border: 1.5px solid var(--border); background: #ffffff; color: var(--text-main); font-weight: 600; text-decoration: none;">
             <svg width="20" height="20" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                 <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
@@ -166,73 +221,46 @@ require_once __DIR__ . '/includes/header.php';
         </a>
     </div>
 
-    <div style="display: flex; align-items: center; margin: 1.5rem 0; color: var(--text-muted, #94a3b8);">
-        <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
-        <span style="padding: 0 0.75rem; font-size: 0.85rem; text-transform: uppercase;">or</span>
-        <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
+    <div style="display: flex; align-items: center; margin: 1.25rem 0; color: var(--text-muted);">
+        <div style="flex: 1; height: 1px; background: var(--border);"></div>
+        <span style="padding: 0 0.75rem; font-size: 0.8rem; text-transform: uppercase;">or sign in with password</span>
+        <div style="flex: 1; height: 1px; background: var(--border);"></div>
     </div>
 
     <form id="login-form" method="post" action="login.php" autocomplete="off">
         <?php echo csrf_field(); ?>
 
-        <!-- Email Address (@gmail.com Fixed Right Addon) -->
+        <!-- Email Address -->
         <div class="form-group">
-            <label for="identity">Gmail Address / Username</label>
-            <div class="input-group">
-                <input class="form-control has-addon-right" type="text" id="identity" name="identity"
-                       value="<?php echo e($identity); ?>"
-                       required maxlength="100">
-                <span class="input-addon-right">@gmail.com</span>
-            </div>
+            <label for="identity">Gmail Address</label>
+            <input class="form-control" type="text" id="identity" name="identity"
+                   value="<?php echo e($identity); ?>"
+                   required maxlength="100">
         </div>
 
         <!-- Password -->
         <div class="form-group">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.45rem;">
                 <label for="password" style="margin-bottom:0;">Password</label>
-                <a id="forgot-link" href="forgot_password.php" style="font-size: 0.85rem; color: #4f46e5; text-decoration: none;">Forgot Password?</a>
+                <a id="forgot-link" href="forgot_password.php" style="font-size: 0.85rem; color: var(--primary); text-decoration: none;">Forgot Password?</a>
             </div>
             <div class="password-wrap">
                 <input class="form-control" type="password" id="password"
                        name="password"
-                       required minlength="8" maxlength="12">
+                       required maxlength="255">
                 <button type="button" class="toggle-password"
-                        data-target="password" aria-label="Show or hide password">&#128065;</button>
+                        data-target="password" aria-label="Show or hide password"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
             </div>
         </div>
 
         <button type="submit" class="btn btn-primary">Sign In &rarr;</button>
 
         <p class="form-footer">
-            Don't have an account? <a href="register.php">Register</a>
+            Don't have an account? <a href="register.php">Register here</a>
         </p>
     </form>
 </div>
 
-<script>
-(function() {
-    var identityInput = document.getElementById('identity');
-    var forgotLink = document.getElementById('forgot-link');
-    
-    function updateForgotLink() {
-        if (!identityInput || !forgotLink) return;
-        var val = identityInput.value.trim();
-        if (val !== '') {
-            if (val.indexOf('@') === -1) {
-                val += '@gmail.com';
-            }
-            forgotLink.href = 'forgot_password.php?login_email=' + encodeURIComponent(val);
-        } else {
-            forgotLink.href = 'forgot_password.php';
-        }
-    }
-    
-    if (identityInput) {
-        identityInput.addEventListener('input', updateForgotLink);
-        updateForgotLink();
-    }
-})();
-</script>
-
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
+
 

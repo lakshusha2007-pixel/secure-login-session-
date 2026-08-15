@@ -29,6 +29,11 @@
 // Load the secure session configuration + helpers.
 require_once __DIR__ . '/includes/auth.php';
 
+// --- Log security event ------------------------------------------------------
+if (isset($_SESSION['user_id'])) {
+    log_security_event('LOGOUT', ['user_id' => $_SESSION['user_id'], 'email' => $_SESSION['email'] ?? ''], (int)$_SESSION['user_id'], 'INFO');
+}
+
 // --- Delete the session cookie ------------------------------------------------
 // Rebuild the exact same parameters the cookie was set with, but with a
 // timestamp in the PAST so the browser removes it immediately. Using the

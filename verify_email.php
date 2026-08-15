@@ -58,19 +58,19 @@ require_once __DIR__ . '/includes/header.php';
 
     <?php if ($status === 'success'): ?>
         <div class="alert alert-success" style="margin-top: 1.5rem;">
-            &#10004; <?php echo e($msg); ?>
+            <?php echo e($msg); ?>
         </div>
         <p style="margin-top: 1.5rem;">
-            <a class="btn btn-primary" href="login.php">Proceed to Sign In &rarr;</a>
+            <a class="btn btn-primary" href="login.php" style="width: 100%;">Sign In to Account &rarr;</a>
         </p>
     <?php else: ?>
         <div class="alert alert-error" style="margin-top: 1.5rem;">
-            &#9888; <?php echo e($msg); ?>
+            <?php echo e($msg); ?>
         </div>
-        <p style="margin-top: 1.5rem;">
-            <a class="btn nav-btn" href="register.php">Back to Registration</a>
-            <a class="btn btn-primary" href="login.php" style="margin-left: 0.5rem;">Sign In</a>
-        </p>
+        <div style="display: flex; gap: 0.75rem; margin-top: 1.5rem; justify-content: center; flex-wrap: wrap;">
+            <a class="btn" href="register.php" style="background: var(--bg-app); border: 1px solid var(--border); color: var(--text-main); text-decoration: none;">Register Account</a>
+            <a class="btn btn-primary" href="login.php" style="width: auto;">Sign In</a>
+        </div>
     <?php endif; ?>
 </div>
 

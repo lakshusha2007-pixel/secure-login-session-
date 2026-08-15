@@ -1,0 +1,18 @@
+{
+    "name": "secure-auth/login-session-system",
+    "description": "Secure Login, Session Management, and Access Control System in Core PHP & MySQL",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.0.0",
+        "ext-mysqli": "*",
+        "ext-openssl": "*",
+        "ext-json": "*",
+        "ext-mbstring": "*"
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true
+    }
+}

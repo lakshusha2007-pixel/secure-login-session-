@@ -25,11 +25,17 @@ $email = $loginEmail !== '' ? $loginEmail : strtolower(trim($_GET['email'] ?? ''
 $info  = '';
 $error = '';
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+$ipAddress = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+$rateCheck = check_rate_limit($conn, $ipAddress, 'forgot_password', 5, 900);
+if (!$rateCheck['allowed']) {
+    $error = 'Too many password reset requests. Account/IP is temporarily restricted. Try again later.';
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $submittedToken = $_POST['csrf_token'] ?? '';
     if (!verify_csrf($submittedToken)) {
         $error = 'Invalid security token or session expired.';
     } else {
+        record_rate_limit_attempt($conn, $ipAddress, 'forgot_password', 5, 900);
+
         $rawEmail = strtolower(trim($_POST['email'] ?? ''));
         if ($rawEmail !== '' && !str_contains($rawEmail, '@')) {
             $email = $rawEmail . '@gmail.com';
@@ -50,19 +56,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (!is_proper_gmail($email, $gmailErr)) {
             $error = 'Invalid credentials.';
         } else {
-            // Trigger 6-digit password reset OTP generation & Gmail SMTP dispatch
-            $res = send_password_reset_otp($email);
-            
-            if (!$res['success']) {
-                $error = $res['message'];
-            } else {
-                // Redirect to reset_password.php with email prefilled
-                header('Location: reset_password.php?email=' . urlencode($email) . '&sent=1');
-                exit;
-            }
+            // Trigger 6-digit password reset OTP generation & Gmail SMTP dispatch.
+            // The response is intentionally identical whether or not the account
+            // exists, so attackers cannot enumerate registered email addresses.
+            send_password_reset_otp($email);
+
+            // Redirect to reset_password.php with email prefilled
+            header('Location: reset_password.php?email=' . urlencode($email) . '&sent=1');
+            exit;
         }
     }
 }
+
 
 $pageTitle = 'Forgot Password — Secure Login System';
 require_once __DIR__ . '/includes/header.php';

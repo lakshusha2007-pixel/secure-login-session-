@@ -1,0 +1,113 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "SecureAuth REST API",
+    "version": "1.0.0",
+    "description": "Hardened, authenticated REST API endpoints for profile management, security audit logging, scoped API key rotation, and GDPR compliance."
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "Production API v1"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "CookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "SECURE_SESSION"
+      },
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      },
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "UserProfile": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 15 },
+          "fullname": { "type": "string", "example": "Jane Doe" },
+          "email": { "type": "string", "format": "email", "example": "jane@gmail.com" },
+          "phone": { "type": "string", "example": "+15551234567" },
+          "role": { "type": "string", "enum": ["user", "admin", "super_admin"], "example": "user" },
+          "email_verified": { "type": "boolean", "example": true },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "key_identifier": { "type": "string", "example": "sk_live_a1b2c3d4" },
+          "name": { "type": "string", "example": "Integration Key" },
+          "scopes": { "type": "array", "items": { "type": "string" }, "example": ["read:profile", "write:profile"] },
+          "expires_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "Access Denied." }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/profile.php": {
+      "get": {
+        "summary": "Get user profile",
+        "security": [{ "CookieAuth": [] }, { "ApiKeyAuth": [] }, { "BearerAuth": [] }],
+        "parameters": [
+          { "name": "id", "in": "query", "required": false, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Profile data retrieved" },
+          "401": { "description": "Unauthenticated" },
+          "403": { "description": "Forbidden / IDOR Violation" }
+        }
+      },
+      "post": {
+        "summary": "Update user profile",
+        "security": [{ "CookieAuth": [] }, { "ApiKeyAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["fullname"],
+                "properties": {
+                  "fullname": { "type": "string", "minLength": 3, "maxLength": 50 },
+                  "phone": { "type": "string", "maxLength": 20 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Profile updated" },
+          "400": { "description": "Schema Validation Error" }
+        }
+      }
+    },
+    "/keys.php": {
+      "get": {
+        "summary": "List API keys",
+        "security": [{ "CookieAuth": [] }],
+        "responses": { "200": { "description": "List of API Keys" } }
+      },
+      "post": {
+        "summary": "Generate new API key",
+        "security": [{ "CookieAuth": [] }],
+        "responses": { "200": { "description": "API Key created (raw key returned once)" } }
+      }
+    }
+  }
+}

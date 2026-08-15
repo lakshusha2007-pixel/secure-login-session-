@@ -1,0 +1,50 @@
+# ==============================================================================
+# .htaccess — SITE-WIDE HTTP SECURITY & TRANSPORT ENFORCEMENT
+# ==============================================================================
+
+# Disable directory listing
+Options -Indexes
+
+# 1. Enforce HTTPS Site-Wide (301 Redirect)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTPS} off
+    RewriteCond %{HTTP:X-Forwarded-Proto} !https
+    RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>
+
+# 2. HTTP Security Headers
+<IfModule mod_headers.c>
+    # Enforce HTTPS via HSTS for 1 year including subdomains
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" env=HTTPS
+
+    # Block MIME type sniffing
+    Header always set X-Content-Type-Options "nosniff"
+
+    # Prevent Clickjacking (disallow framing)
+    Header always set X-Frame-Options "DENY"
+
+    # Referrer Policy
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # Restrict unneeded browser features
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+</IfModule>
+
+# 3. Custom Security Error Pages
+ErrorDocument 404 /404.php
+ErrorDocument 403 /403.php
+ErrorDocument 500 /500.php
+
+# 4. Deny direct web access to sensitive environment files, backups, logs, and repositories
+<FilesMatch "^\.env|security\.log|error\.log|\.git|\.sql|\.bak|\.zip|\.tar|\.gz|\.json|\.lock|database.*">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# 5. Restrict sensitive directories
+<IfModule mod_rewrite.c>
+    RewriteRule ^logs/ - [F,L]
+    RewriteRule ^scripts/ - [F,L]
+    RewriteRule ^config/ - [F,L]
+</IfModule>

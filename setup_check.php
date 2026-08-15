@@ -11,6 +11,18 @@
 // Load DB config constants
 require_once __DIR__ . '/config/database.php';
 
+// Start a session so the one-click setup action can be CSRF-protected.
+require_once __DIR__ . '/config/session.php';
+
+// Simple session-based CSRF token for the setup form.
+function setup_csrf_token(): string
+{
+    if (empty($_SESSION['setup_csrf'])) {
+        $_SESSION['setup_csrf'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['setup_csrf'];
+}
+
 $stepResults = [];
 $dbConnected = false;
 $tableExists = false;
@@ -34,7 +46,11 @@ try {
 
 // Handle Auto-Setup Action
 if (isset($_POST['action']) && $_POST['action'] === 'setup_db' && $dbConnected) {
-    try {
+    $submittedToken = $_POST['csrf_token'] ?? '';
+    if ($submittedToken === '' || empty($_SESSION['setup_csrf']) || !hash_equals($_SESSION['setup_csrf'], $submittedToken)) {
+        $errorMessage = 'Invalid security token. Please refresh the page and try again.';
+    } else {
+        try {
         // Create Database if not exists
         $connNoDb->query("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
         $connNoDb->select_db(DB_NAME);
@@ -57,19 +73,53 @@ if (isset($_POST['action']) && $_POST['action'] === 'setup_db' && $dbConnected) 
             `otp_last_sent`            DATETIME     DEFAULT NULL,
             `failed_login_attempts`    INT          NOT NULL DEFAULT 0,
             `lockout_until`            DATETIME     DEFAULT NULL,
+            `is_active`                TINYINT(1)   NOT NULL DEFAULT 1,
+            `verification_token`       VARCHAR(255) DEFAULT NULL,
+            `verification_expires`     DATETIME     DEFAULT NULL,
             `created_at`               TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (`id`),
             UNIQUE KEY `uq_users_email` (`email`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
         $connNoDb->query($tableSql);
 
+        // Create password_resets table (same schema as config/database.php)
+        $resetTableSql = "CREATE TABLE IF NOT EXISTS `password_resets` (
+            `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `user_id`    INT UNSIGNED NOT NULL,
+            `token_hash` VARCHAR(255) NOT NULL,
+            `expires_at` DATETIME     NOT NULL,
+            `used_at`    DATETIME     DEFAULT NULL,
+            `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            KEY `idx_resets_user_id` (`user_id`),
+            KEY `idx_resets_token_hash` (`token_hash`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        $connNoDb->query($resetTableSql);
+
+        // Create security_logs audit table
+        $logsTableSql = "CREATE TABLE IF NOT EXISTS `security_logs` (
+            `id`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `user_id`    INT UNSIGNED DEFAULT NULL,
+            `event_type` VARCHAR(100) NOT NULL,
+            `ip_address` VARCHAR(45)  NOT NULL,
+            `user_agent` TEXT         DEFAULT NULL,
+            `details`    TEXT         DEFAULT NULL,
+            `severity`   VARCHAR(20)  NOT NULL DEFAULT 'INFO',
+            `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            KEY `idx_logs_event` (`event_type`),
+            KEY `idx_logs_user` (`user_id`),
+            KEY `idx_logs_created` (`created_at`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        $connNoDb->query($logsTableSql);
+
         // Check if demo user exists
-        $checkUser = $connNoDb->query("SELECT id FROM users WHERE email = 'demo@example.com'");
+        $checkUser = $connNoDb->query("SELECT id FROM users WHERE email = 'demo@gmail.com'");
         if ($checkUser->num_rows === 0) {
-            $demoHash = password_hash('Test@123', PASSWORD_DEFAULT);
-            $stmt = $connNoDb->prepare("INSERT INTO users (fullname, email, password, role) VALUES (?, ?, ?, ?)");
+            $demoHash = password_hash('TestPassword@123', defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_DEFAULT);
+            $stmt = $connNoDb->prepare("INSERT INTO users (fullname, email, password, role, email_verified) VALUES (?, ?, ?, ?, 1)");
             $name = 'Demo User';
-            $email = 'demo@example.com';
+            $email = 'demo@gmail.com';
             $role = 'user';
             $stmt->bind_param('ssss', $name, $email, $demoHash, $role);
             $stmt->execute();
@@ -78,8 +128,9 @@ if (isset($_POST['action']) && $_POST['action'] === 'setup_db' && $dbConnected) 
 
         header('Location: setup_check.php?success=1');
         exit;
-    } catch (Throwable $ex) {
-        $errorMessage = $ex->getMessage();
+        } catch (Throwable $ex) {
+            $errorMessage = $ex->getMessage();
+        }
     }
 }
 
@@ -161,7 +212,7 @@ if ($dbConnected) {
             <div class="diag-item">
                 <div>
                     <strong>Demo User Seeded</strong><br>
-                    <small>Login: <code>demo@example.com</code> / Pass: <code>Test@123</code></small>
+                    <small>Login: <code>demo@gmail.com</code> / Pass: <code>TestPassword@123</code></small>
                 </div>
                 <span class="<?php echo $userSeeded ? 'badge-pass' : 'badge-fail'; ?>">
                     <?php echo $userSeeded ? 'READY' : 'EMPTY'; ?>
@@ -173,6 +224,7 @@ if ($dbConnected) {
             <?php if ($dbConnected && (!$tableExists || !$userSeeded)): ?>
                 <form method="post" action="setup_check.php">
                     <input type="hidden" name="action" value="setup_db">
+                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars(setup_csrf_token(), ENT_QUOTES, 'UTF-8'); ?>">
                     <button type="submit" class="btn btn-primary">&#9881; Auto-Create Database &amp; Seed Demo User</button>
                 </form>
             <?php elseif ($tableExists && $userSeeded): ?>
@@ -189,8 +241,8 @@ if ($dbConnected) {
             <br>
             <h3>Demo Login Credentials</h3>
             <div class="code-box">
-Email:    demo@example.com
-Password: Test@123
+Email:    demo@gmail.com
+Password: TestPassword@123
             </div>
 
             <br>
